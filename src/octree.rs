@@ -4,7 +4,8 @@ use bevy::{
     render::mesh::{Indices, PrimitiveTopology, VertexAttributeValues},
 };
 
-const VOXEL_WORLD_SIZE: u32 = 8;
+pub const VOXEL_WORLD_SIZE: u32 = 8;
+pub const LOD_DISTANCE: f32 = 50.;
 
 #[derive(Debug)]
 pub struct VoxelNode<T> {
@@ -42,9 +43,22 @@ impl<T: Clone> VoxelNode<T> {
 
         let shift = depth - 1;
 
-        let xi = ((x >> shift) & 1) as usize;
-        let yi = ((y >> shift) & 1) as usize;
-        let zi = ((z >> shift) & 1) as usize;
+        // Determine which child octant the voxel belongs to
+        let xi = if x >= 0 {
+            ((x >> shift) & 1) as usize
+        } else {
+            (((x + 1) >> shift) & 1) as usize
+        };
+        let yi = if y >= 0 {
+            ((y >> shift) & 1) as usize
+        } else {
+            (((y + 1) >> shift) & 1) as usize
+        };
+        let zi = if z >= 0 {
+            ((z >> shift) & 1) as usize
+        } else {
+            (((z + 1) >> shift) & 1) as usize
+        };
 
         let idx = (xi << 2) | (yi << 1) | zi;
 
@@ -66,13 +80,7 @@ impl<T: Clone> SparseVoxelWorld<T> {
         self.root.insert(x, y, z, self.max_depth, value);
     }
 
-    pub fn generate_mesh_from_svo(&self, target_depth: u32) -> Mesh {
-        // Ensure that target_depth is not too large
-        assert!(
-            target_depth <= self.max_depth,
-            "Tried to traverse to a depth bigger than maximum depth of SVO: {target_depth}"
-        );
-
+    pub fn generate_mesh_from_svo(&self, camera_pos: [f32; 3]) -> Mesh {
         let mut positions_and_scales = Vec::new();
 
         // Recursive traversal to desired LOD depth
@@ -83,7 +91,7 @@ impl<T: Clone> SparseVoxelWorld<T> {
             y: i32,
             z: i32,
             depth: u32,
-            target_depth: u32,
+            camera_pos: [f32; 3],
             max_depth: u32,
             out: &mut Vec<([f32; 3], f32)>,
         ) {
@@ -97,8 +105,26 @@ impl<T: Clone> SparseVoxelWorld<T> {
             // - every level up doubles the size
             let cube_size = 2f32.powi((max_depth - depth) as i32);
 
+            let voxel_center = [
+                x as f32 + cube_size * 0.5,
+                y as f32 + cube_size * 0.5,
+                z as f32 + cube_size * 0.5,
+            ];
+
+            // Distance from camera
+            let dx = voxel_center[0] - camera_pos[0];
+            let dy = voxel_center[1] - camera_pos[1];
+            let dz = voxel_center[2] - camera_pos[2];
+            let distance_sq = dx * dx + dy * dy + dz * dz;
+
+            // Determine LOD based on distance
+            // Example: farther voxels use lower depth
+            let distance = distance_sq.sqrt();
+            let lod_threshold = LOD_DISTANCE * (depth + 1) as f32;
+            let should_stop = depth >= max_depth || distance > lod_threshold;
+
             // If reached target depth or this is a leaf
-            if depth == target_depth || !node.has_children() {
+            if should_stop || !node.has_children() {
                 out.push(([x as f32, y as f32, z as f32], cube_size));
                 return;
             }
@@ -107,22 +133,38 @@ impl<T: Clone> SparseVoxelWorld<T> {
 
             for (i, child) in node.children.iter().enumerate() {
                 if let Some(child) = child {
-                    let dx = ((i as i32 >> 2) & 1) * step;
-                    let dy = ((i as i32 >> 1) & 1) * step;
-                    let dz = (i as i32 & 1) * step;
+                    // Decode child index bits
+                    let xi = ((i >> 2) & 1) as i32;
+                    let yi = ((i >> 1) & 1) as i32;
+                    let zi = (i & 1) as i32;
 
-                    traverse_lod(child, x + dx, y + dy, z + dz, depth + 1, target_depth, max_depth, out);
+                    // Calculate child position offsets:
+                    // For signed space, child position = x + (xi * step) - half_step
+                    // Where half_step = step, since step = half cube size at this level
+                    // But since x is the min corner of parent cube,
+                    // and we want the children to cover the full parent cube,
+                    // the offsets become:
+
+                    let child_x = x + (xi * step);
+                    let child_y = y + (yi * step);
+                    let child_z = z + (zi * step);
+
+                    traverse_lod(child, child_x, child_y, child_z, depth + 1, camera_pos, max_depth, out);
                 }
             }
         }
 
+        // Adjust root call to start from negative half of world size so octree is centered at zero
+        let half_world_size = 1 << self.max_depth;
+        let root_min_corner = -half_world_size / 2;
+
         traverse_lod(
             &self.root,
+            root_min_corner,
+            root_min_corner,
+            root_min_corner,
             0,
-            0,
-            0,
-            0,
-            target_depth,
+            camera_pos,
             self.max_depth,
             &mut positions_and_scales,
         );
@@ -215,33 +257,4 @@ impl<T: Clone> SparseVoxelWorld<T> {
             .with_inserted_indices(Indices::U32(indices))
             .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, VertexAttributeValues::Float32x3(normals))
     }
-}
-
-pub fn setup_voxel_world(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-) {
-    let mut svo = SparseVoxelWorld {
-        root: VoxelNode::new(None),
-        size: VOXEL_WORLD_SIZE,
-        max_depth: 3,
-    };
-
-    svo.insert(0, 0, 0, 1);
-    svo.insert(1, 0, 0, 2);
-    svo.insert(4, 0, 0, 2);
-    // svo.root.insert(0, 1, 0, 2, 2);
-    // svo.root.insert(0, 4, 0, 1, 1);
-
-    // Generate mesh for SVO
-    let svo_mesh = svo.generate_mesh_from_svo(svo.max_depth);
-
-    commands.spawn((
-        Mesh3d(meshes.add(svo_mesh)),
-        MeshMaterial3d(materials.add(Color::srgb_u8(124, 144, 255))),
-        Transform::from_xyz(0.0, 0.5, 0.0),
-    ));
-
-    commands.insert_resource(svo);
 }

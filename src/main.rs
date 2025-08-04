@@ -3,7 +3,7 @@ use bevy::{
     window::{PresentMode, WindowResolution},
 };
 
-use crate::octree::setup_voxel_world;
+use crate::octree::{SparseVoxelWorld, VOXEL_WORLD_SIZE, VoxelNode};
 
 pub mod octree;
 
@@ -31,13 +31,11 @@ fn main() {
                 })
                 .set(ImagePlugin::default_nearest()),
         )
-        .add_systems(Startup, (setup, setup_voxel_world))
+        .add_systems(Startup, setup)
         .run();
 }
 
-/// set up a simple 3D scene
-fn setup(mut commands: Commands, // , mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>
-) {
+pub fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>) {
     // light
     let light_pos = Transform::from_xyz(0.0, 10.0, 5.0);
     commands.spawn((
@@ -55,8 +53,31 @@ fn setup(mut commands: Commands, // , mut meshes: ResMut<Assets<Mesh>>, mut mate
     // ));
 
     // camera
+    let camera_pos = Transform::from_xyz(0.0, 10., 30.0).looking_at(Vec3::ZERO, Vec3::Y);
+    commands.spawn((Camera3d::default(), camera_pos));
+
+    let mut svo = SparseVoxelWorld {
+        root: VoxelNode::new(None),
+        size: VOXEL_WORLD_SIZE,
+        max_depth: 3,
+    };
+
+    svo.insert(0, 0, 0, 1);
+    svo.insert(1, 0, 0, 2);
+    svo.insert(4, 0, 0, 2);
+    svo.insert(0, 1, -20, 2);
+    // svo.root.insert(0, 1, 0, 2, 2);
+    // svo.root.insert(0, 4, 0, 1, 1);
+
+    // Generate mesh for SVO
+    let camera_pos = camera_pos.translation;
+    let svo_mesh = svo.generate_mesh_from_svo([camera_pos.x, camera_pos.y, camera_pos.z]);
+
     commands.spawn((
-        Camera3d::default(),
-        Transform::from_xyz(0.0, 10., 30.0).looking_at(Vec3::ZERO, Vec3::Y),
+        Mesh3d(meshes.add(svo_mesh)),
+        MeshMaterial3d(materials.add(Color::srgb_u8(124, 144, 255))),
+        Transform::from_xyz(0.0, 0.5, 0.0),
     ));
+
+    commands.insert_resource(svo);
 }
