@@ -73,14 +73,24 @@ pub fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mater
     // svo.insert(IVec3::new(0, 0, 1), 2);
     // svo.insert(IVec3::new(3, 0, -4), 2);
 
-    // Generate mesh for SVO
-    let camera_pos = camera_pos.translation;
-    let svo_mesh = svo.generate_mesh_from_svo(camera_pos);
+    // // Generate mesh for SVO
+    // let camera_pos = camera_pos.translation;
+    // let svo_mesh = svo.generate_mesh(camera_pos);
+    // commands.spawn((
+    //     Mesh3d(meshes.add(svo_mesh)),
+    //     MeshMaterial3d(materials.add(Color::srgb_u8(124, 144, 255))),
+    //     Transform::from_xyz(0.0, 0.0, 0.0),
+    // ));
 
+    let svo_octants_mesh = svo.generate_bounding_octants_mesh();
     commands.spawn((
-        Mesh3d(meshes.add(svo_mesh)),
-        MeshMaterial3d(materials.add(Color::srgb_u8(124, 144, 255))),
-        Transform::from_xyz(0.0, 0.5, 0.0),
+        Mesh3d(meshes.add(svo_octants_mesh)),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            unlit: true,
+            base_color: Color::WHITE,
+            ..default()
+        })),
+        Transform::from_xyz(0.0, 0.0, 0.0),
     ));
 
     commands.insert_resource(svo);

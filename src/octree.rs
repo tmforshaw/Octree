@@ -79,71 +79,71 @@ impl<T: Clone> SparseVoxelWorld<T> {
         self.root.insert(pos, self.max_depth, root_min_corner, value);
     }
 
-    pub fn generate_mesh_from_svo(&self, camera_pos: Vec3) -> Mesh {
-        let mut positions_and_scales = Vec::new();
+    // Returns Vec of node centres and their size
+    pub fn traverse_lod(
+        node: &VoxelNode<T>,
+        origin: IVec3,
+        depth: u32,
+        camera_pos: Vec3,
+        max_depth: u32,
+        out: &mut Vec<(Vec3, f32)>,
+    ) {
+        // Skip empty nodes
+        if !node.occupied {
+            return;
+        }
 
-        #[allow(clippy::too_many_arguments)]
-        fn traverse_lod<T>(
-            node: &VoxelNode<T>,
-            origin: IVec3,
-            depth: u32,
-            camera_pos: Vec3,
-            max_depth: u32,
-            out: &mut Vec<(Vec3, f32)>,
-        ) {
-            // Skip empty nodes
-            if !node.occupied {
-                return;
-            }
+        // Cube size in world units
+        let cube_size = 2i32.pow(max_depth - depth);
+        let cube_size_f = cube_size as f32;
 
-            // Cube size in world units
-            let cube_size = 2i32.pow(max_depth - depth);
-            let cube_size_f = cube_size as f32;
+        // Compute the voxel centre for LOD check
+        let voxel_center = origin.as_vec3() + Vec3::splat(cube_size_f * 0.5);
 
-            // Compute the voxel centre for LOD check
-            let voxel_center = origin.as_vec3() + Vec3::splat(cube_size_f * 0.5);
+        // LOD distance check
+        let distance = voxel_center.distance(camera_pos);
+        let lod_threshold = LOD_DISTANCE;
+        let should_stop = depth >= max_depth || distance > lod_threshold;
 
-            // LOD distance check
-            let distance = voxel_center.distance(camera_pos);
-            let lod_threshold = LOD_DISTANCE;
-            let should_stop = depth >= max_depth || distance > lod_threshold;
+        // If reached leaf or LOD cutoff
+        if should_stop || !node.has_children() {
+            out.push((origin.as_vec3(), cube_size_f));
+            return;
+        }
 
-            // If reached leaf or LOD cutoff
-            if should_stop || !node.has_children() {
-                out.push((origin.as_vec3(), cube_size_f));
-                return;
-            }
+        // Half size for child nodes
+        let half = cube_size / 2;
 
-            // Half size for child nodes
-            let half = cube_size / 2;
+        // Child octant offsets (8 combinations of x,y,z)
+        const OFFSETS: [IVec3; 8] = [
+            IVec3::new(0, 0, 0),
+            IVec3::new(0, 0, 1),
+            IVec3::new(0, 1, 0),
+            IVec3::new(0, 1, 1),
+            IVec3::new(1, 0, 0),
+            IVec3::new(1, 0, 1),
+            IVec3::new(1, 1, 0),
+            IVec3::new(1, 1, 1),
+        ];
 
-            // Child octant offsets (8 combinations of x,y,z)
-            const OFFSETS: [IVec3; 8] = [
-                IVec3::new(0, 0, 0),
-                IVec3::new(0, 0, 1),
-                IVec3::new(0, 1, 0),
-                IVec3::new(0, 1, 1),
-                IVec3::new(1, 0, 0),
-                IVec3::new(1, 0, 1),
-                IVec3::new(1, 1, 0),
-                IVec3::new(1, 1, 1),
-            ];
+        // Traverse into all children of this node
+        for (child, offset) in node.children.iter().zip(OFFSETS) {
+            if let Some(child) = child {
+                let child_origin = origin + offset * half;
 
-            // Traverse into all children of this node
-            for (child, offset) in node.children.iter().zip(OFFSETS) {
-                if let Some(child) = child {
-                    let child_origin = origin + offset * half;
-
-                    traverse_lod(child, child_origin, depth + 1, camera_pos, max_depth, out);
-                }
+                Self::traverse_lod(child, child_origin, depth + 1, camera_pos, max_depth, out);
             }
         }
+    }
+
+    pub fn generate_mesh(&self, camera_pos: Vec3) -> Mesh {
+        let mut positions_and_scales = Vec::new();
 
         // Centre the world at (0,0,0)
         let world_size = 1 << self.max_depth;
         let root_min = IVec3::splat(-world_size / 2);
 
-        traverse_lod(
+        Self::traverse_lod(
             &self.root,
             root_min,
             0, // start depth
@@ -151,86 +151,6 @@ impl<T: Clone> SparseVoxelWorld<T> {
             self.max_depth,
             &mut positions_and_scales,
         );
-
-        // fn vertices_and_indices_from_voxel_positions(voxels: &[(Vec3, f32)]) -> (Vec<[f32; 3]>, Vec<u32>) {
-        //     // Vertices of a cube centered at origin, ranging from -0.5 to 0.5
-        //     const CUBE_VERTICES: [Vec3; 8] = [
-        //         Vec3::new(-0.5, -0.5, -0.5), // 0
-        //         Vec3::new(0.5, -0.5, -0.5),  // 1
-        //         Vec3::new(0.5, 0.5, -0.5),   // 2
-        //         Vec3::new(-0.5, 0.5, -0.5),  // 3
-        //         Vec3::new(-0.5, -0.5, 0.5),  // 4
-        //         Vec3::new(0.5, -0.5, 0.5),   // 5
-        //         Vec3::new(0.5, 0.5, 0.5),    // 6
-        //         Vec3::new(-0.5, 0.5, 0.5),   // 7
-        //     ];
-
-        //     // Indices for triangles (two per face)
-        //     const CUBE_INDICES: [u32; 36] = [
-        //         0, 2, 1, 0, 3, 2, // Bottom
-        //         4, 5, 6, 4, 6, 7, // Top
-        //         0, 1, 5, 0, 5, 4, // Front
-        //         1, 2, 6, 1, 6, 5, // Right
-        //         2, 3, 7, 2, 7, 6, // Back
-        //         3, 0, 4, 3, 4, 7, // Left
-        //     ];
-
-        //     let mut vertices = Vec::new();
-        //     let mut indices = Vec::new();
-
-        //     for (i, &(pos, scale)) in voxels.iter().enumerate() {
-        //         // Add scaled cube vertices, offset by voxel position
-        //         for &corner in &CUBE_VERTICES {
-        //             vertices.push((pos + corner * scale).to_array());
-        //         }
-
-        //         // Add cube indices offset by base_index
-        //         let base_index = (i * 8) as u32;
-        //         for &idx in &CUBE_INDICES {
-        //             indices.push(base_index + idx);
-        //         }
-        //     }
-
-        //     (vertices, indices)
-        // }
-
-        // let (vertices, indices) = vertices_and_indices_from_voxel_positions(&positions_and_scales);
-
-        // fn generate_normals(voxel_count: usize) -> Vec<[f32; 3]> {
-        //     fn normalise(v: Vec3) -> [f32; 3] {
-        //         let mag = v.length();
-        //         if mag > 0.0 { v / mag } else { v }.to_array()
-        //     }
-
-        //     // 6 face normals, one per face (±X, ±Y, ±Z)
-        //     const FACE_NORMALS: [[f32; 3]; 6] = [
-        //         [0.0, -1.0, 0.0], // Bottom (−Y)
-        //         [0.0, 1.0, 0.0],  // Top (+Y)
-        //         [0.0, 0.0, -1.0], // Front (−Z)
-        //         [1.0, 0.0, 0.0],  // Right (+X)
-        //         [0.0, 0.0, 1.0],  // Back (+Z)
-        //         [-1.0, 0.0, 0.0], // Left (−X)
-        //     ];
-
-        //     // Each face has 4 vertices (2 triangles per face)
-        //     const VERTS_PER_FACE: usize = 4;
-        //     const FACES_PER_CUBE: usize = 6;
-
-        //     let mut normals = Vec::with_capacity(voxel_count * VERTS_PER_FACE * FACES_PER_CUBE);
-        //     for _ in 0..voxel_count {
-        //         for &normal in &FACE_NORMALS {
-        //             // Repeat the same normal for each vertex of the face
-        //             for _ in 0..VERTS_PER_FACE {
-        //                 normals.push(normal);
-        //             }
-        //         }
-        //     }
-        //     normals
-        // }
-
-        // println!("{:?}", positions_and_scales.iter().map(|(pos, _)| pos).collect::<Vec<_>>());
-
-        // let normals = generate_normals(positions_and_scales.len());
 
         #[allow(clippy::identity_op)]
         fn vertices_indices_and_normals_from_voxels(voxels: &[(Vec3, f32)]) -> (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<u32>) {
@@ -327,5 +247,108 @@ impl<T: Clone> SparseVoxelWorld<T> {
             .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, VertexAttributeValues::Float32x3(vertices))
             .with_inserted_indices(Indices::U32(indices))
             .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, VertexAttributeValues::Float32x3(normals))
+    }
+
+    pub fn generate_bounding_octants_mesh(&self) -> Mesh {
+        const CUBE_CORNERS: [Vec3; 8] = [
+            Vec3::new(0.0, 0.0, 0.0), // 0
+            Vec3::new(1.0, 0.0, 0.0), // 1
+            Vec3::new(1.0, 1.0, 0.0), // 2
+            Vec3::new(0.0, 1.0, 0.0), // 3
+            Vec3::new(0.0, 0.0, 1.0), // 4
+            Vec3::new(1.0, 0.0, 1.0), // 5
+            Vec3::new(1.0, 1.0, 1.0), // 6
+            Vec3::new(0.0, 1.0, 1.0), // 7
+        ];
+
+        const CUBE_EDGES: [(usize, usize); 12] = [
+            (0, 1),
+            (1, 2),
+            (2, 3),
+            (3, 0),
+            // bottom loop
+            (4, 5),
+            (5, 6),
+            (6, 7),
+            (7, 4),
+            // top loop
+            (0, 4),
+            (1, 5),
+            (2, 6),
+            (3, 7),
+            // vertical edges
+        ];
+
+        fn collect_octree_lines<T>(
+            node: &VoxelNode<T>,
+            origin: Vec3,
+            depth: u32,
+            max_depth: u32,
+            lines: &mut Vec<[f32; 3]>,
+            colours: &mut Vec<[f32; 4]>,
+        ) {
+            if !node.occupied || depth == max_depth {
+                return;
+            }
+
+            let size = 2u32.pow(max_depth - depth) as f32;
+
+            let center = origin + size * 0.5;
+
+            // Compute the cube corners in world space
+            let corners: Vec<[f32; 3]> = CUBE_CORNERS
+                .iter()
+                .map(|c| {
+                    // Calculate the line vertex
+                    let line_vertex = origin + c * size;
+
+                    // Calculate the distance to the node centre from this line
+                    let centre_dir = (line_vertex - center).normalize();
+
+                    // Push the vertex away from the centre by a small amount
+                    (line_vertex + centre_dir * 0.001 * size).to_array()
+                })
+                .collect();
+
+            // Push the edges as line segments (2 points per line)
+            for &(a, b) in &CUBE_EDGES {
+                lines.push(corners[a]); // Start
+                lines.push(corners[b]); // End
+
+                colours.push(
+                    Color::hsv(depth as f32 / max_depth as f32 * 255., 1.0, 1.)
+                        .to_linear()
+                        .to_f32_array(),
+                );
+                colours.push(
+                    Color::hsv(depth as f32 / max_depth as f32 * 255., 1.0, 1.)
+                        .to_linear()
+                        .to_f32_array(),
+                );
+            }
+
+            // Recurse into children if present
+            if node.has_children() {
+                let half = size * 0.5;
+                for (i, child) in node.children.iter().enumerate() {
+                    if let Some(child) = child {
+                        let offset = origin + Vec3::new(((i >> 2) & 1) as f32, ((i >> 1) & 1) as f32, (i & 1) as f32) * half;
+                        collect_octree_lines(child, offset, depth + 1, max_depth, lines, colours);
+                    }
+                }
+            }
+        }
+
+        let root_size = 2f32.powi(self.max_depth as i32);
+        let root_origin = Vec3::splat(-root_size * 0.5);
+
+        let (mut lines, mut colours) = (Vec::new(), Vec::new());
+        collect_octree_lines(&self.root, root_origin, 0, self.max_depth, &mut lines, &mut colours);
+
+        // Create the Mesh
+        Mesh::new(PrimitiveTopology::LineList, RenderAssetUsages::RENDER_WORLD)
+            // Insert the lines
+            .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, VertexAttributeValues::Float32x3(lines))
+            .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, VertexAttributeValues::Float32x4(colours))
     }
 }
