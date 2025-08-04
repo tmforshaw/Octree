@@ -37,13 +37,7 @@ fn main() {
 
 pub fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>) {
     // Light
-    commands.spawn((
-        PointLight {
-            shadows_enabled: true,
-            ..default()
-        },
-        Transform::from_xyz(0.0, 10.0, 5.0),
-    ));
+    commands.spawn((PointLight::default(), Transform::from_xyz(0.0, 10.0, 5.0)));
 
     // Camera
     let camera_pos = Transform::from_xyz(0.0, 10., 20.0).looking_at(Vec3::ZERO, Vec3::Y);
