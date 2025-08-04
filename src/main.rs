@@ -3,6 +3,10 @@ use bevy::{
     window::{PresentMode, WindowResolution},
 };
 
+use crate::octree::setup_voxel_world;
+
+pub mod octree;
+
 fn main() {
     // Remove unnecessary vulkan validation errors, PresentMode errors, Xsettings errors, and swapchain errors
     unsafe {
@@ -27,35 +31,32 @@ fn main() {
                 })
                 .set(ImagePlugin::default_nearest()),
         )
-        .add_systems(Startup, setup)
+        .add_systems(Startup, (setup, setup_voxel_world))
         .run();
 }
 
 /// set up a simple 3D scene
-fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>) {
-    // circular base
-    commands.spawn((
-        Mesh3d(meshes.add(Circle::new(4.0))),
-        MeshMaterial3d(materials.add(Color::WHITE)),
-        Transform::from_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
-    ));
-    // cube
-    commands.spawn((
-        Mesh3d(meshes.add(Cuboid::new(1.0, 1.0, 1.0))),
-        MeshMaterial3d(materials.add(Color::srgb_u8(124, 144, 255))),
-        Transform::from_xyz(0.0, 0.5, 0.0),
-    ));
+fn setup(mut commands: Commands, // , mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>
+) {
     // light
+    let light_pos = Transform::from_xyz(0.0, 10.0, 5.0);
     commands.spawn((
         PointLight {
             shadows_enabled: true,
             ..default()
         },
-        Transform::from_xyz(4.0, 8.0, 4.0),
+        light_pos,
     ));
+
+    // commands.spawn((
+    //     Mesh3d(meshes.add(Cuboid::new(1.0, 1.0, 1.0))),
+    //     MeshMaterial3d(materials.add(Color::srgb_u8(255, 0, 0))),
+    //     light_pos.with_scale(Vec3::splat(0.3)),
+    // ));
+
     // camera
     commands.spawn((
         Camera3d::default(),
-        Transform::from_xyz(-2.5, 4.5, 9.0).looking_at(Vec3::ZERO, Vec3::Y),
+        Transform::from_xyz(0.0, 10., 30.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
 }
