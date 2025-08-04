@@ -9,8 +9,8 @@ pub const LOD_DISTANCE: f32 = 50.;
 
 #[derive(Debug)]
 pub struct VoxelNode<T> {
-    data: Option<T>,                          // Optional voxel data
-    children: [Option<Box<VoxelNode<T>>>; 8], // Sparse children
+    data: Option<T>,
+    children: [Option<Box<VoxelNode<T>>>; 8],
     occupied: bool,
 }
 
@@ -23,48 +23,43 @@ impl<T> VoxelNode<T> {
         }
     }
 
-    // fn is_empty(&self) -> bool {
-    //     !self.occupied
-    // }
-
     pub fn has_children(&self) -> bool {
         self.children.iter().any(|c| c.is_some())
     }
 }
 
 impl<T: Clone> VoxelNode<T> {
-    fn insert(&mut self, x: i32, y: i32, z: i32, depth: u32, value: T) {
+    fn insert(&mut self, pos: IVec3, depth: u32, mut origin: IVec3, value: T) {
         self.occupied = true;
 
+        // Leaf node when bottom is reached
         if depth == 0 {
             self.data = Some(value);
             return;
         }
 
-        let shift = depth - 1;
+        // Double the cube size until at the current depth's size (Size == 1 for leaf)
+        let half_size = 1 << (depth - 1);
+        let centre = origin + IVec3::splat(half_size);
 
-        // Determine which child octant the voxel belongs to
-        let xi = if x >= 0 {
-            ((x >> shift) & 1) as usize
-        } else {
-            (((x + 1) >> shift) & 1) as usize
-        };
-        let yi = if y >= 0 {
-            ((y >> shift) & 1) as usize
-        } else {
-            (((y + 1) >> shift) & 1) as usize
-        };
-        let zi = if z >= 0 {
-            ((z >> shift) & 1) as usize
-        } else {
-            (((z + 1) >> shift) & 1) as usize
-        };
+        // Calculate the index of this position, and offset the current centre
+        let mut idx = 0;
+        if pos.x >= centre.x {
+            idx |= 0b100;
+            origin.x += half_size;
+        }
+        if pos.y >= centre.y {
+            idx |= 0b010;
+            origin.y += half_size;
+        }
+        if pos.z >= centre.z {
+            idx |= 0b001;
+            origin.z += half_size;
+        }
 
-        let idx = (xi << 2) | (yi << 1) | zi;
-
+        // Get or create a new child for this node at idx, then insert into it
         let child = self.children[idx].get_or_insert_with(|| Box::new(VoxelNode::new(None)));
-
-        child.insert(x, y, z, depth - 1, value);
+        child.insert(pos, depth - 1, origin, value);
     }
 }
 
@@ -76,110 +71,98 @@ pub struct SparseVoxelWorld<T> {
 }
 
 impl<T: Clone> SparseVoxelWorld<T> {
-    pub fn insert(&mut self, x: i32, y: i32, z: i32, value: T) {
-        self.root.insert(x, y, z, self.max_depth, value);
+    pub fn insert(&mut self, pos: IVec3, value: T) {
+        // Centre the origin at (0, 0, 0)
+        let world_size = 1 << self.max_depth;
+        let root_min_corner = IVec3::splat(-world_size / 2);
+
+        self.root.insert(pos, self.max_depth, root_min_corner, value);
     }
 
-    pub fn generate_mesh_from_svo(&self, camera_pos: [f32; 3]) -> Mesh {
+    pub fn generate_mesh_from_svo(&self, camera_pos: Vec3) -> Mesh {
         let mut positions_and_scales = Vec::new();
 
-        // Recursive traversal to desired LOD depth
         #[allow(clippy::too_many_arguments)]
         fn traverse_lod<T>(
             node: &VoxelNode<T>,
-            x: i32,
-            y: i32,
-            z: i32,
+            origin: IVec3,
             depth: u32,
-            camera_pos: [f32; 3],
+            camera_pos: Vec3,
             max_depth: u32,
-            out: &mut Vec<([f32; 3], f32)>,
+            out: &mut Vec<(Vec3, f32)>,
         ) {
-            // Skip if empty branch
+            // Skip empty nodes
             if !node.occupied {
                 return;
             }
 
-            // Cube size in world units:
-            // - depth == max_depth => 1.0
-            // - every level up doubles the size
-            let cube_size = 2f32.powi((max_depth - depth) as i32);
+            // Cube size in world units
+            let cube_size = 2i32.pow(max_depth - depth);
+            let cube_size_f = cube_size as f32;
 
-            let voxel_center = [
-                x as f32 + cube_size * 0.5,
-                y as f32 + cube_size * 0.5,
-                z as f32 + cube_size * 0.5,
-            ];
+            // Compute the voxel centre for LOD check
+            let voxel_center = origin.as_vec3() + Vec3::splat(cube_size_f * 0.5);
 
-            // Distance from camera
-            let dx = voxel_center[0] - camera_pos[0];
-            let dy = voxel_center[1] - camera_pos[1];
-            let dz = voxel_center[2] - camera_pos[2];
-            let distance_sq = dx * dx + dy * dy + dz * dz;
-
-            // Determine LOD based on distance
-            // Example: farther voxels use lower depth
-            let distance = distance_sq.sqrt();
+            // LOD distance check
+            let distance = voxel_center.distance(camera_pos);
             let lod_threshold = LOD_DISTANCE * (depth + 1) as f32;
             let should_stop = depth >= max_depth || distance > lod_threshold;
 
-            // If reached target depth or this is a leaf
+            // If reached leaf or LOD cutoff
             if should_stop || !node.has_children() {
-                out.push(([x as f32, y as f32, z as f32], cube_size));
+                out.push((origin.as_vec3(), cube_size_f));
                 return;
             }
 
-            let step = cube_size as i32 / 2; // half size in this level
+            // Half size for child nodes
+            let half = cube_size / 2;
 
-            for (i, child) in node.children.iter().enumerate() {
+            // Child octant offsets (8 combinations of x,y,z)
+            const OFFSETS: [IVec3; 8] = [
+                IVec3::new(0, 0, 0),
+                IVec3::new(0, 0, 1),
+                IVec3::new(0, 1, 0),
+                IVec3::new(0, 1, 1),
+                IVec3::new(1, 0, 0),
+                IVec3::new(1, 0, 1),
+                IVec3::new(1, 1, 0),
+                IVec3::new(1, 1, 1),
+            ];
+
+            // Traverse into all children of this node
+            for (child, offset) in node.children.iter().zip(OFFSETS) {
                 if let Some(child) = child {
-                    // Decode child index bits
-                    let xi = ((i >> 2) & 1) as i32;
-                    let yi = ((i >> 1) & 1) as i32;
-                    let zi = (i & 1) as i32;
+                    let child_origin = origin + offset * half;
 
-                    // Calculate child position offsets:
-                    // For signed space, child position = x + (xi * step) - half_step
-                    // Where half_step = step, since step = half cube size at this level
-                    // But since x is the min corner of parent cube,
-                    // and we want the children to cover the full parent cube,
-                    // the offsets become:
-
-                    let child_x = x + (xi * step);
-                    let child_y = y + (yi * step);
-                    let child_z = z + (zi * step);
-
-                    traverse_lod(child, child_x, child_y, child_z, depth + 1, camera_pos, max_depth, out);
+                    traverse_lod(child, child_origin, depth + 1, camera_pos, max_depth, out);
                 }
             }
         }
 
-        // Adjust root call to start from negative half of world size so octree is centered at zero
-        let half_world_size = 1 << self.max_depth;
-        let root_min_corner = -half_world_size / 2;
+        // Centre the world at (0,0,0)
+        let world_size = 1 << self.max_depth;
+        let root_min = IVec3::splat(-world_size / 2);
 
         traverse_lod(
             &self.root,
-            root_min_corner,
-            root_min_corner,
-            root_min_corner,
-            0,
+            root_min,
+            0, // start depth
             camera_pos,
             self.max_depth,
             &mut positions_and_scales,
         );
 
-        fn vertices_and_indices_from_voxel_positions(voxels: &[([f32; 3], f32)]) -> (Vec<[f32; 3]>, Vec<u32>) {
-            // Vertices of a unit cube at origin
-            const CUBE_VERTICES: [[f32; 3]; 8] = [
-                [0.0, 0.0, 0.0], // 0
-                [1.0, 0.0, 0.0], // 1
-                [1.0, 1.0, 0.0], // 2
-                [0.0, 1.0, 0.0], // 3
-                [0.0, 0.0, 1.0], // 4
-                [1.0, 0.0, 1.0], // 5
-                [1.0, 1.0, 1.0], // 6
-                [0.0, 1.0, 1.0], // 7
+        fn vertices_and_indices_from_voxel_positions(voxels: &[(Vec3, f32)]) -> (Vec<[f32; 3]>, Vec<u32>) {
+            // Vertices of a cube centered at origin, ranging from -0.5 to 0.5
+            const CUBE_VERTICES: [Vec3; 8] = [
+                Vec3::new(-0.5, -0.5, -0.5), // 0
+                Vec3::new(0.5, -0.5, -0.5),  // 1
+                Vec3::new(0.5, 0.5, -0.5),   // 2
+                Vec3::new(-0.5, 0.5, -0.5),  // 3
+                Vec3::new(-0.5, -0.5, 0.5),  // 4
+                Vec3::new(0.5, -0.5, 0.5),   // 5
+                Vec3::new(0.5, 0.5, 0.5),    // 6
+                Vec3::new(-0.5, 0.5, 0.5),   // 7
             ];
 
             // Indices for triangles (two per face)
@@ -196,18 +179,13 @@ impl<T: Clone> SparseVoxelWorld<T> {
             let mut indices = Vec::new();
 
             for (i, &(pos, scale)) in voxels.iter().enumerate() {
-                let base_index = (i * 8) as u32;
-
                 // Add scaled cube vertices, offset by voxel position
                 for &corner in &CUBE_VERTICES {
-                    vertices.push([
-                        pos[0] + corner[0] * scale,
-                        pos[1] + corner[1] * scale,
-                        pos[2] + corner[2] * scale,
-                    ]);
+                    vertices.push((pos + corner * scale).to_array());
                 }
 
                 // Add cube indices offset by base_index
+                let base_index = (i * 8) as u32;
                 for &idx in &CUBE_INDICES {
                     indices.push(base_index + idx);
                 }
@@ -219,20 +197,20 @@ impl<T: Clone> SparseVoxelWorld<T> {
         let (vertices, indices) = vertices_and_indices_from_voxel_positions(&positions_and_scales);
 
         fn generate_normals(voxel_count: usize) -> Vec<[f32; 3]> {
-            fn normalise(v: [f32; 3]) -> [f32; 3] {
-                let mag = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-                if mag > 0.0 { [v[0] / mag, v[1] / mag, v[2] / mag] } else { v }
+            fn normalise(v: Vec3) -> [f32; 3] {
+                let mag = v.length();
+                if mag > 0.0 { v / mag } else { v }.to_array()
             }
 
-            const CUBE_NORMALS_PER_VERTEX: [[f32; 3]; 8] = [
-                [-1.0, -1.0, -1.0], // 0
-                [1.0, -1.0, -1.0],  // 1
-                [1.0, 1.0, -1.0],   // 2
-                [-1.0, 1.0, -1.0],  // 3
-                [-1.0, -1.0, 1.0],  // 4
-                [1.0, -1.0, 1.0],   // 5
-                [1.0, 1.0, 1.0],    // 6
-                [-1.0, 1.0, 1.0],   // 7
+            const CUBE_NORMALS_PER_VERTEX: [Vec3; 8] = [
+                Vec3::new(-1.0, -1.0, -1.0), // 0
+                Vec3::new(1.0, -1.0, -1.0),  // 1
+                Vec3::new(1.0, 1.0, -1.0),   // 2
+                Vec3::new(-1.0, 1.0, -1.0),  // 3
+                Vec3::new(-1.0, -1.0, 1.0),  // 4
+                Vec3::new(1.0, -1.0, 1.0),   // 5
+                Vec3::new(1.0, 1.0, 1.0),    // 6
+                Vec3::new(-1.0, 1.0, 1.0),   // 7
             ];
 
             let mut normals = Vec::with_capacity(voxel_count * CUBE_NORMALS_PER_VERTEX.len());
@@ -246,7 +224,7 @@ impl<T: Clone> SparseVoxelWorld<T> {
             normals
         }
 
-        println!("{positions_and_scales:?}");
+        println!("{:?}", positions_and_scales.iter().map(|(pos, _)| pos).collect::<Vec<_>>());
 
         let normals = generate_normals(positions_and_scales.len());
 
