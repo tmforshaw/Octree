@@ -37,7 +37,15 @@ fn main() {
 
 pub fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>) {
     // Light
-    commands.spawn((PointLight::default(), Transform::from_xyz(0.0, 10.0, 5.0)));
+    commands.spawn((
+        PointLight {
+            shadows_enabled: true,
+            radius: 1.,
+            range: 1000.,
+            ..default()
+        },
+        Transform::from_xyz(0.0, 10.0, 5.0),
+    ));
 
     // Camera
     let camera_pos = Transform::from_xyz(0.0, 10., 20.0).looking_at(Vec3::ZERO, Vec3::Y);
@@ -49,11 +57,21 @@ pub fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mater
         max_depth: 3,
     };
 
-    svo.insert(IVec3::new(0, 0, 0), 1);
-    svo.insert(IVec3::new(1, 0, 0), 2);
-    svo.insert(IVec3::new(0, 1, 0), 2);
-    svo.insert(IVec3::new(0, 0, 1), 2);
-    svo.insert(IVec3::new(3, 0, -4), 2);
+    for i in -(2_i32.pow(svo.max_depth)) / 2..(2_i32.pow(svo.max_depth)) / 2 {
+        for j in -(2_i32.pow(svo.max_depth)) / 2..(2_i32.pow(svo.max_depth)) / 2 {
+            for k in -(2_i32.pow(svo.max_depth)) / 2..(2_i32.pow(svo.max_depth)) / 2 {
+                if (i % 2 == 0 && j % 2 == 0 && k % 2 == 0) || ((i + 1) % 2 == 0 && (j + 1) % 2 == 0 && (k + 1) % 2 == 0) {
+                    svo.insert(IVec3::new(i, j, k), 1);
+                }
+            }
+        }
+    }
+
+    // svo.insert(IVec3::new(0, 0, 0), 1);
+    // svo.insert(IVec3::new(1, 0, 0), 2);
+    // svo.insert(IVec3::new(0, 1, 0), 2);
+    // svo.insert(IVec3::new(0, 0, 1), 2);
+    // svo.insert(IVec3::new(3, 0, -4), 2);
 
     // Generate mesh for SVO
     let camera_pos = camera_pos.translation;

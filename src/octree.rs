@@ -4,8 +4,8 @@ use bevy::{
     render::mesh::{Indices, PrimitiveTopology, VertexAttributeValues},
 };
 
-pub const VOXEL_WORLD_SIZE: u32 = 8;
-pub const LOD_DISTANCE: f32 = 50.;
+pub const VOXEL_WORLD_SIZE: u32 = 16;
+pub const LOD_DISTANCE: f32 = 23.;
 
 #[derive(Debug)]
 pub struct VoxelNode<T> {
@@ -105,7 +105,7 @@ impl<T: Clone> SparseVoxelWorld<T> {
 
             // LOD distance check
             let distance = voxel_center.distance(camera_pos);
-            let lod_threshold = LOD_DISTANCE * (depth + 1) as f32;
+            let lod_threshold = LOD_DISTANCE;
             let should_stop = depth >= max_depth || distance > lod_threshold;
 
             // If reached leaf or LOD cutoff
@@ -152,81 +152,174 @@ impl<T: Clone> SparseVoxelWorld<T> {
             &mut positions_and_scales,
         );
 
-        fn vertices_and_indices_from_voxel_positions(voxels: &[(Vec3, f32)]) -> (Vec<[f32; 3]>, Vec<u32>) {
-            // Vertices of a cube centered at origin, ranging from -0.5 to 0.5
-            const CUBE_VERTICES: [Vec3; 8] = [
-                Vec3::new(-0.5, -0.5, -0.5), // 0
-                Vec3::new(0.5, -0.5, -0.5),  // 1
-                Vec3::new(0.5, 0.5, -0.5),   // 2
-                Vec3::new(-0.5, 0.5, -0.5),  // 3
-                Vec3::new(-0.5, -0.5, 0.5),  // 4
-                Vec3::new(0.5, -0.5, 0.5),   // 5
-                Vec3::new(0.5, 0.5, 0.5),    // 6
-                Vec3::new(-0.5, 0.5, 0.5),   // 7
+        // fn vertices_and_indices_from_voxel_positions(voxels: &[(Vec3, f32)]) -> (Vec<[f32; 3]>, Vec<u32>) {
+        //     // Vertices of a cube centered at origin, ranging from -0.5 to 0.5
+        //     const CUBE_VERTICES: [Vec3; 8] = [
+        //         Vec3::new(-0.5, -0.5, -0.5), // 0
+        //         Vec3::new(0.5, -0.5, -0.5),  // 1
+        //         Vec3::new(0.5, 0.5, -0.5),   // 2
+        //         Vec3::new(-0.5, 0.5, -0.5),  // 3
+        //         Vec3::new(-0.5, -0.5, 0.5),  // 4
+        //         Vec3::new(0.5, -0.5, 0.5),   // 5
+        //         Vec3::new(0.5, 0.5, 0.5),    // 6
+        //         Vec3::new(-0.5, 0.5, 0.5),   // 7
+        //     ];
+
+        //     // Indices for triangles (two per face)
+        //     const CUBE_INDICES: [u32; 36] = [
+        //         0, 2, 1, 0, 3, 2, // Bottom
+        //         4, 5, 6, 4, 6, 7, // Top
+        //         0, 1, 5, 0, 5, 4, // Front
+        //         1, 2, 6, 1, 6, 5, // Right
+        //         2, 3, 7, 2, 7, 6, // Back
+        //         3, 0, 4, 3, 4, 7, // Left
+        //     ];
+
+        //     let mut vertices = Vec::new();
+        //     let mut indices = Vec::new();
+
+        //     for (i, &(pos, scale)) in voxels.iter().enumerate() {
+        //         // Add scaled cube vertices, offset by voxel position
+        //         for &corner in &CUBE_VERTICES {
+        //             vertices.push((pos + corner * scale).to_array());
+        //         }
+
+        //         // Add cube indices offset by base_index
+        //         let base_index = (i * 8) as u32;
+        //         for &idx in &CUBE_INDICES {
+        //             indices.push(base_index + idx);
+        //         }
+        //     }
+
+        //     (vertices, indices)
+        // }
+
+        // let (vertices, indices) = vertices_and_indices_from_voxel_positions(&positions_and_scales);
+
+        // fn generate_normals(voxel_count: usize) -> Vec<[f32; 3]> {
+        //     fn normalise(v: Vec3) -> [f32; 3] {
+        //         let mag = v.length();
+        //         if mag > 0.0 { v / mag } else { v }.to_array()
+        //     }
+
+        //     // 6 face normals, one per face (±X, ±Y, ±Z)
+        //     const FACE_NORMALS: [[f32; 3]; 6] = [
+        //         [0.0, -1.0, 0.0], // Bottom (−Y)
+        //         [0.0, 1.0, 0.0],  // Top (+Y)
+        //         [0.0, 0.0, -1.0], // Front (−Z)
+        //         [1.0, 0.0, 0.0],  // Right (+X)
+        //         [0.0, 0.0, 1.0],  // Back (+Z)
+        //         [-1.0, 0.0, 0.0], // Left (−X)
+        //     ];
+
+        //     // Each face has 4 vertices (2 triangles per face)
+        //     const VERTS_PER_FACE: usize = 4;
+        //     const FACES_PER_CUBE: usize = 6;
+
+        //     let mut normals = Vec::with_capacity(voxel_count * VERTS_PER_FACE * FACES_PER_CUBE);
+        //     for _ in 0..voxel_count {
+        //         for &normal in &FACE_NORMALS {
+        //             // Repeat the same normal for each vertex of the face
+        //             for _ in 0..VERTS_PER_FACE {
+        //                 normals.push(normal);
+        //             }
+        //         }
+        //     }
+        //     normals
+        // }
+
+        // println!("{:?}", positions_and_scales.iter().map(|(pos, _)| pos).collect::<Vec<_>>());
+
+        // let normals = generate_normals(positions_and_scales.len());
+
+        #[allow(clippy::identity_op)]
+        fn vertices_indices_and_normals_from_voxels(voxels: &[(Vec3, f32)]) -> (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<u32>) {
+            // Offsets for all 6 cube faces
+            const FACE_OFFSETS: [[Vec3; 4]; 6] = [
+                // Bottom (-Y)
+                [
+                    Vec3::new(0.0, 0.0, 0.0),
+                    Vec3::new(1.0, 0.0, 0.0),
+                    Vec3::new(1.0, 0.0, 1.0),
+                    Vec3::new(0.0, 0.0, 1.0),
+                ],
+                // Top (+Y)
+                [
+                    Vec3::new(0.0, 1.0, 0.0),
+                    Vec3::new(0.0, 1.0, 1.0),
+                    Vec3::new(1.0, 1.0, 1.0),
+                    Vec3::new(1.0, 1.0, 0.0),
+                ],
+                // Front (-Z)
+                [
+                    Vec3::new(0.0, 0.0, 0.0),
+                    Vec3::new(0.0, 1.0, 0.0),
+                    Vec3::new(1.0, 1.0, 0.0),
+                    Vec3::new(1.0, 0.0, 0.0),
+                ],
+                // Back (+Z)
+                [
+                    Vec3::new(0.0, 0.0, 1.0),
+                    Vec3::new(1.0, 0.0, 1.0),
+                    Vec3::new(1.0, 1.0, 1.0),
+                    Vec3::new(0.0, 1.0, 1.0),
+                ],
+                // Left (-X)
+                [
+                    Vec3::new(0.0, 0.0, 0.0),
+                    Vec3::new(0.0, 0.0, 1.0),
+                    Vec3::new(0.0, 1.0, 1.0),
+                    Vec3::new(0.0, 1.0, 0.0),
+                ],
+                // Right (+X)
+                [
+                    Vec3::new(1.0, 0.0, 0.0),
+                    Vec3::new(1.0, 1.0, 0.0),
+                    Vec3::new(1.0, 1.0, 1.0),
+                    Vec3::new(1.0, 0.0, 1.0),
+                ],
             ];
 
-            // Indices for triangles (two per face)
-            const CUBE_INDICES: [u32; 36] = [
-                0, 2, 1, 0, 3, 2, // Bottom
-                4, 5, 6, 4, 6, 7, // Top
-                0, 1, 5, 0, 5, 4, // Front
-                1, 2, 6, 1, 6, 5, // Right
-                2, 3, 7, 2, 7, 6, // Back
-                3, 0, 4, 3, 4, 7, // Left
+            // Normals for all 6 cube faces
+            const FACE_NORMALS: [[f32; 3]; 6] = [
+                [0.0, -1.0, 0.0], // Bottom
+                [0.0, 1.0, 0.0],  // Top
+                [0.0, 0.0, -1.0], // Front
+                [0.0, 0.0, 1.0],  // Back
+                [-1.0, 0.0, 0.0], // Left
+                [1.0, 0.0, 0.0],  // Right
             ];
 
             let mut vertices = Vec::new();
+            let mut normals = Vec::new();
             let mut indices = Vec::new();
 
             for (i, &(pos, scale)) in voxels.iter().enumerate() {
-                // Add scaled cube vertices, offset by voxel position
-                for &corner in &CUBE_VERTICES {
-                    vertices.push((pos + corner * scale).to_array());
-                }
+                let base_index = (i * 24) as u32; // 24 vertices per cube
 
-                // Add cube indices offset by base_index
-                let base_index = (i * 8) as u32;
-                for &idx in &CUBE_INDICES {
-                    indices.push(base_index + idx);
+                for (face_id, face) in FACE_OFFSETS.iter().enumerate() {
+                    // Push 4 vertices for this face
+                    for &corner in face {
+                        vertices.push((pos + corner * scale).to_array());
+                        normals.push(FACE_NORMALS[face_id]);
+                    }
+
+                    // Two triangles per face (quad)
+                    indices.extend_from_slice(&[
+                        base_index + (face_id * 4 + 0) as u32,
+                        base_index + (face_id * 4 + 1) as u32,
+                        base_index + (face_id * 4 + 2) as u32,
+                        base_index + (face_id * 4 + 0) as u32,
+                        base_index + (face_id * 4 + 2) as u32,
+                        base_index + (face_id * 4 + 3) as u32,
+                    ]);
                 }
             }
 
-            (vertices, indices)
+            (vertices, normals, indices)
         }
 
-        let (vertices, indices) = vertices_and_indices_from_voxel_positions(&positions_and_scales);
-
-        fn generate_normals(voxel_count: usize) -> Vec<[f32; 3]> {
-            fn normalise(v: Vec3) -> [f32; 3] {
-                let mag = v.length();
-                if mag > 0.0 { v / mag } else { v }.to_array()
-            }
-
-            const CUBE_NORMALS_PER_VERTEX: [Vec3; 8] = [
-                Vec3::new(-1.0, -1.0, -1.0), // 0
-                Vec3::new(1.0, -1.0, -1.0),  // 1
-                Vec3::new(1.0, 1.0, -1.0),   // 2
-                Vec3::new(-1.0, 1.0, -1.0),  // 3
-                Vec3::new(-1.0, -1.0, 1.0),  // 4
-                Vec3::new(1.0, -1.0, 1.0),   // 5
-                Vec3::new(1.0, 1.0, 1.0),    // 6
-                Vec3::new(-1.0, 1.0, 1.0),   // 7
-            ];
-
-            let mut normals = Vec::with_capacity(voxel_count * CUBE_NORMALS_PER_VERTEX.len());
-
-            for _ in 0..voxel_count {
-                for &normal in &CUBE_NORMALS_PER_VERTEX {
-                    normals.push(normalise(normal));
-                }
-            }
-
-            normals
-        }
-
-        println!("{:?}", positions_and_scales.iter().map(|(pos, _)| pos).collect::<Vec<_>>());
-
-        let normals = generate_normals(positions_and_scales.len());
+        let (vertices, normals, indices) = vertices_indices_and_normals_from_voxels(&positions_and_scales);
 
         // Create the Mesh
         Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
