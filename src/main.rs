@@ -34,6 +34,14 @@ fn main() {
                 })
                 .set(ImagePlugin::default_nearest()),
         )
+        .insert_resource(MovementSettings {
+            sensitivity: 0.00015, // default is 0.00012
+            speed: 24.0,          // default is 12.0
+        })
+        .insert_resource(KeyBindings {
+            move_descend: KeyCode::ControlLeft,
+            ..Default::default()
+        })
         .add_plugins(PlayerPlugin)
         .add_systems(PostStartup, setup)
         .add_systems(Update, update_svo)
