@@ -4,8 +4,14 @@ use bevy::{
     render::mesh::{Indices, PrimitiveTopology, VertexAttributeValues},
 };
 
-pub const VOXEL_WORLD_SIZE: u32 = 16;
-pub const LOD_DISTANCE: f32 = 23.;
+pub const VOXEL_WORLD_DEPTH: u32 = 7;
+pub const LOD_DISTANCE: f32 = 10.;
+
+#[derive(Component)]
+pub struct SvoEntity;
+
+#[derive(Component)]
+pub struct SvoOctantsEntity;
 
 #[derive(Debug)]
 pub struct VoxelNode<T> {
@@ -66,7 +72,6 @@ impl<T: Clone> VoxelNode<T> {
 #[derive(Resource)]
 pub struct SparseVoxelWorld<T> {
     pub root: VoxelNode<T>,
-    pub size: u32,
     pub max_depth: u32,
 }
 
@@ -102,7 +107,7 @@ impl<T: Clone> SparseVoxelWorld<T> {
 
         // LOD distance check
         let distance = voxel_center.distance(camera_pos);
-        let lod_threshold = LOD_DISTANCE;
+        let lod_threshold = LOD_DISTANCE * max_depth as f32;
         let should_stop = depth >= max_depth || distance > lod_threshold;
 
         // If reached leaf or LOD cutoff
@@ -249,7 +254,7 @@ impl<T: Clone> SparseVoxelWorld<T> {
             .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, VertexAttributeValues::Float32x3(normals))
     }
 
-    pub fn generate_bounding_octants_mesh(&self) -> Mesh {
+    pub fn generate_bounding_octants_mesh(&self, camera_pos: Vec3) -> Mesh {
         const CUBE_CORNERS: [Vec3; 8] = [
             Vec3::new(0.0, 0.0, 0.0), // 0
             Vec3::new(1.0, 0.0, 0.0), // 1
@@ -284,16 +289,22 @@ impl<T: Clone> SparseVoxelWorld<T> {
             origin: Vec3,
             depth: u32,
             max_depth: u32,
+            camera_pos: Vec3,
             lines: &mut Vec<[f32; 3]>,
             colours: &mut Vec<[f32; 4]>,
         ) {
-            if !node.occupied || depth == max_depth {
+            let size = 2u32.pow(max_depth - depth) as f32;
+            let centre = origin + size * 0.5;
+
+            // LOD distance check
+            let distance = centre.distance(camera_pos);
+            let lod_threshold = LOD_DISTANCE * max_depth as f32;
+            let should_stop = depth >= max_depth || distance > lod_threshold;
+
+            // If reached leaf or LOD cutoff
+            if should_stop || !node.occupied {
                 return;
             }
-
-            let size = 2u32.pow(max_depth - depth) as f32;
-
-            let center = origin + size * 0.5;
 
             // Compute the cube corners in world space
             let corners: Vec<[f32; 3]> = CUBE_CORNERS
@@ -303,28 +314,24 @@ impl<T: Clone> SparseVoxelWorld<T> {
                     let line_vertex = origin + c * size;
 
                     // Calculate the distance to the node centre from this line
-                    let centre_dir = (line_vertex - center).normalize();
+                    let centre_dir = (line_vertex - centre).normalize();
 
                     // Push the vertex away from the centre by a small amount
                     (line_vertex + centre_dir * 0.001 * size).to_array()
                 })
                 .collect();
 
+            let colour = Color::hsv(depth as f32 / max_depth as f32 * 255., 1.0, 1.)
+                .to_linear()
+                .to_f32_array();
+
             // Push the edges as line segments (2 points per line)
             for &(a, b) in &CUBE_EDGES {
                 lines.push(corners[a]); // Start
                 lines.push(corners[b]); // End
 
-                colours.push(
-                    Color::hsv(depth as f32 / max_depth as f32 * 255., 1.0, 1.)
-                        .to_linear()
-                        .to_f32_array(),
-                );
-                colours.push(
-                    Color::hsv(depth as f32 / max_depth as f32 * 255., 1.0, 1.)
-                        .to_linear()
-                        .to_f32_array(),
-                );
+                colours.push(colour);
+                colours.push(colour);
             }
 
             // Recurse into children if present
@@ -333,17 +340,26 @@ impl<T: Clone> SparseVoxelWorld<T> {
                 for (i, child) in node.children.iter().enumerate() {
                     if let Some(child) = child {
                         let offset = origin + Vec3::new(((i >> 2) & 1) as f32, ((i >> 1) & 1) as f32, (i & 1) as f32) * half;
-                        collect_octree_lines(child, offset, depth + 1, max_depth, lines, colours);
+                        collect_octree_lines(child, offset, depth + 1, max_depth, camera_pos, lines, colours);
                     }
                 }
             }
         }
 
+        // Centre world around (0,0,0)
         let root_size = 2f32.powi(self.max_depth as i32);
         let root_origin = Vec3::splat(-root_size * 0.5);
 
         let (mut lines, mut colours) = (Vec::new(), Vec::new());
-        collect_octree_lines(&self.root, root_origin, 0, self.max_depth, &mut lines, &mut colours);
+        collect_octree_lines(
+            &self.root,
+            root_origin,
+            0,
+            self.max_depth,
+            camera_pos,
+            &mut lines,
+            &mut colours,
+        );
 
         // Create the Mesh
         Mesh::new(PrimitiveTopology::LineList, RenderAssetUsages::RENDER_WORLD)

@@ -2,10 +2,13 @@ use bevy::{
     prelude::*,
     window::{PresentMode, WindowResolution},
 };
+use bevy_flycam::prelude::*;
 
-use crate::octree::{SparseVoxelWorld, VOXEL_WORLD_SIZE, VoxelNode};
+use crate::octree::{SparseVoxelWorld, SvoEntity, SvoOctantsEntity, VOXEL_WORLD_DEPTH};
 
+pub mod camera_controller;
 pub mod octree;
+pub mod svo_generation;
 
 fn main() {
     // Remove unnecessary vulkan validation errors, PresentMode errors, Xsettings errors, and swapchain errors
@@ -31,11 +34,18 @@ fn main() {
                 })
                 .set(ImagePlugin::default_nearest()),
         )
-        .add_systems(Startup, setup)
+        .add_plugins(PlayerPlugin)
+        .add_systems(PostStartup, setup)
+        .add_systems(Update, update_svo)
         .run();
 }
 
-pub fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>) {
+pub fn setup(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    camera: Query<&Transform, With<Camera3d>>,
+) {
     // Light
     commands.spawn((
         PointLight {
@@ -47,42 +57,20 @@ pub fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mater
         Transform::from_xyz(0.0, 10.0, 5.0),
     ));
 
-    // Camera
-    let camera_pos = Transform::from_xyz(0.0, 10., 20.0).looking_at(Vec3::ZERO, Vec3::Y);
-    commands.spawn((Camera3d::default(), camera_pos));
+    let svo = SparseVoxelWorld::new_from_noise(VOXEL_WORLD_DEPTH, 0.5, 0);
 
-    let mut svo = SparseVoxelWorld {
-        root: VoxelNode::new(None),
-        size: VOXEL_WORLD_SIZE,
-        max_depth: 3,
-    };
+    let camera_pos = camera.single().unwrap();
 
-    for i in -(2_i32.pow(svo.max_depth)) / 2..(2_i32.pow(svo.max_depth)) / 2 {
-        for j in -(2_i32.pow(svo.max_depth)) / 2..(2_i32.pow(svo.max_depth)) / 2 {
-            for k in -(2_i32.pow(svo.max_depth)) / 2..(2_i32.pow(svo.max_depth)) / 2 {
-                if (i % 2 == 0 && j % 2 == 0 && k % 2 == 0) || ((i + 1) % 2 == 0 && (j + 1) % 2 == 0 && (k + 1) % 2 == 0) {
-                    svo.insert(IVec3::new(i, j, k), 1);
-                }
-            }
-        }
-    }
+    // Generate mesh for SVO
+    let svo_mesh = svo.generate_mesh(camera_pos.translation);
+    commands.spawn((
+        Mesh3d(meshes.add(svo_mesh)),
+        MeshMaterial3d(materials.add(Color::srgb_u8(124, 144, 255))),
+        Transform::from_xyz(0.0, 0.0, 0.0),
+        SvoEntity,
+    ));
 
-    // svo.insert(IVec3::new(0, 0, 0), 1);
-    // svo.insert(IVec3::new(1, 0, 0), 2);
-    // svo.insert(IVec3::new(0, 1, 0), 2);
-    // svo.insert(IVec3::new(0, 0, 1), 2);
-    // svo.insert(IVec3::new(3, 0, -4), 2);
-
-    // // Generate mesh for SVO
-    // let camera_pos = camera_pos.translation;
-    // let svo_mesh = svo.generate_mesh(camera_pos);
-    // commands.spawn((
-    //     Mesh3d(meshes.add(svo_mesh)),
-    //     MeshMaterial3d(materials.add(Color::srgb_u8(124, 144, 255))),
-    //     Transform::from_xyz(0.0, 0.0, 0.0),
-    // ));
-
-    let svo_octants_mesh = svo.generate_bounding_octants_mesh();
+    let svo_octants_mesh = svo.generate_bounding_octants_mesh(camera_pos.translation);
     commands.spawn((
         Mesh3d(meshes.add(svo_octants_mesh)),
         MeshMaterial3d(materials.add(StandardMaterial {
@@ -91,7 +79,33 @@ pub fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mater
             ..default()
         })),
         Transform::from_xyz(0.0, 0.0, 0.0),
+        SvoOctantsEntity,
     ));
 
     commands.insert_resource(svo);
+}
+
+#[allow(clippy::type_complexity)]
+pub fn update_svo(
+    svo: ResMut<SparseVoxelWorld<i32>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut mesh_queries: ParamSet<(
+        Query<&mut Mesh3d, With<SvoEntity>>,
+        Query<&mut Mesh3d, With<SvoOctantsEntity>>,
+    )>,
+    camera: Query<&Transform, With<Camera3d>>,
+) {
+    if let Ok(camera_pos) = camera.single() {
+        // New SVO Mesh
+        let new_mesh = svo.generate_mesh(camera_pos.translation);
+        if let Ok(mut mesh_handle) = mesh_queries.p0().single_mut() {
+            *mesh_handle = Mesh3d(meshes.add(new_mesh));
+        }
+
+        // New Octants SVO Mesh
+        let new_octants_mesh = svo.generate_bounding_octants_mesh(camera_pos.translation);
+        if let Ok(mut mesh_handle) = mesh_queries.p1().single_mut() {
+            *mesh_handle = Mesh3d(meshes.add(new_octants_mesh));
+        }
+    }
 }
