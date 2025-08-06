@@ -3,9 +3,11 @@ use bevy::{
     prelude::*,
     render::mesh::{Indices, PrimitiveTopology, VertexAttributeValues},
 };
+use rayon::prelude::*;
 
-pub const VOXEL_WORLD_DEPTH: u32 = 7;
-pub const LOD_DISTANCE: f32 = 10.;
+pub const VOXEL_WORLD_DEPTH: u32 = 8;
+pub const LOD_DISTANCE: f32 = 20.;
+pub const SHOW_OCTANTS_MESH: bool = false;
 
 #[derive(Component)]
 pub struct SvoEntity;
@@ -34,7 +36,7 @@ impl<T> VoxelNode<T> {
     }
 }
 
-impl<T: Clone> VoxelNode<T> {
+impl<T: Clone + Sync> VoxelNode<T> {
     fn insert(&mut self, pos: IVec3, depth: u32, mut origin: IVec3, value: T) {
         self.occupied = true;
 
@@ -75,7 +77,13 @@ pub struct SparseVoxelWorld<T> {
     pub max_depth: u32,
 }
 
-impl<T: Clone> SparseVoxelWorld<T> {
+impl<T: Clone + Sync> SparseVoxelWorld<T> {
+    pub fn get_root_origin(&self) -> IVec3 {
+        // Centre the origin at (0, 0, 0)
+        let world_size = 1 << self.max_depth;
+        IVec3::splat(-world_size / 2)
+    }
+
     pub fn insert(&mut self, pos: IVec3, value: T) {
         // Centre the origin at (0, 0, 0)
         let world_size = 1 << self.max_depth;
@@ -85,41 +93,31 @@ impl<T: Clone> SparseVoxelWorld<T> {
     }
 
     // Returns Vec of node centres and their size
-    pub fn traverse_lod(
-        node: &VoxelNode<T>,
-        origin: IVec3,
-        depth: u32,
-        camera_pos: Vec3,
-        max_depth: u32,
-        out: &mut Vec<(Vec3, f32)>,
-    ) {
+    pub fn traverse_lod(node: &VoxelNode<T>, origin: IVec3, depth: u32, camera_pos: Vec3, max_depth: u32) -> Vec<(Vec3, f32)> {
         // Skip empty nodes
         if !node.occupied {
-            return;
+            return Vec::new();
         }
 
-        // Cube size in world units
-        let cube_size = 2i32.pow(max_depth - depth);
-        let cube_size_f = cube_size as f32;
+        let size = 2i32.pow(max_depth - depth);
+        let size_f = size as f32;
 
-        // Compute the voxel centre for LOD check
-        let voxel_center = origin.as_vec3() + Vec3::splat(cube_size_f * 0.5);
+        let should_stop = {
+            // LOD distance check
+            let voxel_centre = origin.as_vec3() + size_f * 0.5;
+            let distance = voxel_centre.distance(camera_pos);
+            let lod_threshold = LOD_DISTANCE * size_f;
 
-        // LOD distance check
-        let distance = voxel_center.distance(camera_pos);
-        let lod_threshold = LOD_DISTANCE * max_depth as f32;
-        let should_stop = depth >= max_depth || distance > lod_threshold;
+            depth >= max_depth || distance > lod_threshold
+        };
 
-        // If reached leaf or LOD cutoff
+        // Leaf node or LOD cutoff
         if should_stop || !node.has_children() {
-            out.push((origin.as_vec3(), cube_size_f));
-            return;
+            return vec![(origin.as_vec3(), size_f)];
         }
 
         // Half size for child nodes
-        let half = cube_size / 2;
-
-        // Child octant offsets (8 combinations of x,y,z)
+        let half = size / 2;
         const OFFSETS: [IVec3; 8] = [
             IVec3::new(0, 0, 0),
             IVec3::new(0, 0, 1),
@@ -131,30 +129,31 @@ impl<T: Clone> SparseVoxelWorld<T> {
             IVec3::new(1, 1, 1),
         ];
 
-        // Traverse into all children of this node
-        for (child, offset) in node.children.iter().zip(OFFSETS) {
-            if let Some(child) = child {
-                let child_origin = origin + offset * half;
+        // Parallel traversal over 8 children
+        node.children
+            .par_iter()
+            .zip(OFFSETS)
+            .filter_map(|(child, offset)| {
+                child.as_ref().map(|child_node| {
+                    let child_origin = origin + offset * half;
 
-                Self::traverse_lod(child, child_origin, depth + 1, camera_pos, max_depth, out);
-            }
-        }
+                    Self::traverse_lod(child_node, child_origin, depth + 1, camera_pos, max_depth)
+                })
+            })
+            .reduce(Vec::new, |mut acc, mut chunk| {
+                acc.append(&mut chunk);
+
+                acc
+            })
     }
 
     pub fn generate_mesh(&self, camera_pos: Vec3) -> Mesh {
-        let mut positions_and_scales = Vec::new();
-
-        // Centre the world at (0,0,0)
-        let world_size = 1 << self.max_depth;
-        let root_min = IVec3::splat(-world_size / 2);
-
-        Self::traverse_lod(
+        let positions_and_scales = Self::traverse_lod(
             &self.root,
-            root_min,
+            self.get_root_origin(),
             0, // start depth
             camera_pos,
             self.max_depth,
-            &mut positions_and_scales,
         );
 
         #[allow(clippy::identity_op)]
@@ -215,31 +214,49 @@ impl<T: Clone> SparseVoxelWorld<T> {
                 [1.0, 0.0, 0.0],  // Right
             ];
 
-            let mut vertices = Vec::new();
-            let mut normals = Vec::new();
-            let mut indices = Vec::new();
+            let num_voxels = voxels.len();
+            let vertices_per_cube = 24;
+            let indices_per_cube = 36;
 
-            for (i, &(pos, scale)) in voxels.iter().enumerate() {
-                let base_index = (i * 24) as u32; // 24 vertices per cube
+            let total_vertices = num_voxels * vertices_per_cube;
+            let total_indices = num_voxels * indices_per_cube;
 
-                for (face_id, face) in FACE_OFFSETS.iter().enumerate() {
-                    // Push 4 vertices for this face
-                    for &corner in face {
-                        vertices.push((pos + corner * scale).to_array());
-                        normals.push(FACE_NORMALS[face_id]);
+            let mut vertices = vec![[0.; 3]; total_vertices];
+            let mut normals = vec![[0.; 3]; total_vertices];
+            let mut indices = vec![0; total_indices];
+
+            // Iterate over chunks of vertices, normals, and indices to generate them in parallel
+            vertices
+                .par_chunks_mut(vertices_per_cube)
+                .zip(normals.par_chunks_mut(vertices_per_cube))
+                .zip(indices.par_chunks_mut(indices_per_cube))
+                .enumerate()
+                .for_each(|(i, ((v_chunk, n_chunk), i_chunk))| {
+                    let (pos, scale) = voxels[i];
+
+                    let base_index = (i * 24) as u32; // 24 vertices per cube
+
+                    for (face_id, face) in FACE_OFFSETS.iter().enumerate() {
+                        // Push 4 vertices for this face
+                        for (corner_id, &corner) in face.iter().enumerate() {
+                            let v_idx = face_id * 4 + corner_id;
+
+                            v_chunk[v_idx] = (pos + corner * scale).to_array();
+                            n_chunk[v_idx] = FACE_NORMALS[face_id];
+                        }
+
+                        let i_idx = face_id * 6;
+                        // Two triangles per face (quad)
+                        i_chunk[i_idx..i_idx + 6].copy_from_slice(&[
+                            base_index + (face_id * 4 + 0) as u32,
+                            base_index + (face_id * 4 + 1) as u32,
+                            base_index + (face_id * 4 + 2) as u32,
+                            base_index + (face_id * 4 + 0) as u32,
+                            base_index + (face_id * 4 + 2) as u32,
+                            base_index + (face_id * 4 + 3) as u32,
+                        ]);
                     }
-
-                    // Two triangles per face (quad)
-                    indices.extend_from_slice(&[
-                        base_index + (face_id * 4 + 0) as u32,
-                        base_index + (face_id * 4 + 1) as u32,
-                        base_index + (face_id * 4 + 2) as u32,
-                        base_index + (face_id * 4 + 0) as u32,
-                        base_index + (face_id * 4 + 2) as u32,
-                        base_index + (face_id * 4 + 3) as u32,
-                    ]);
-                }
-            }
+                });
 
             (vertices, normals, indices)
         }
@@ -284,39 +301,35 @@ impl<T: Clone> SparseVoxelWorld<T> {
             // vertical edges
         ];
 
-        fn collect_octree_lines<T>(
+        pub fn collect_octree_lines<T: Sync>(
             node: &VoxelNode<T>,
             origin: Vec3,
             depth: u32,
             max_depth: u32,
             camera_pos: Vec3,
-            lines: &mut Vec<[f32; 3]>,
-            colours: &mut Vec<[f32; 4]>,
-        ) {
+        ) -> (Vec<[f32; 3]>, Vec<[f32; 4]>) {
             let size = 2u32.pow(max_depth - depth) as f32;
             let centre = origin + size * 0.5;
 
-            // LOD distance check
-            let distance = centre.distance(camera_pos);
-            let lod_threshold = LOD_DISTANCE * max_depth as f32;
-            let should_stop = depth >= max_depth || distance > lod_threshold;
+            let should_stop = {
+                // LOD distance check
+                let distance = centre.distance(camera_pos);
+                let lod_threshold = LOD_DISTANCE * size;
+
+                depth >= max_depth || distance > lod_threshold
+            };
 
             // If reached leaf or LOD cutoff
             if should_stop || !node.occupied {
-                return;
+                return (Vec::new(), Vec::new());
             }
 
-            // Compute the cube corners in world space
+            // Compute cube corners in world space
             let corners: Vec<[f32; 3]> = CUBE_CORNERS
                 .iter()
                 .map(|c| {
-                    // Calculate the line vertex
                     let line_vertex = origin + c * size;
-
-                    // Calculate the distance to the node centre from this line
                     let centre_dir = (line_vertex - centre).normalize();
-
-                    // Push the vertex away from the centre by a small amount
                     (line_vertex + centre_dir * 0.001 * size).to_array()
                 })
                 .collect();
@@ -325,46 +338,105 @@ impl<T: Clone> SparseVoxelWorld<T> {
                 .to_linear()
                 .to_f32_array();
 
-            // Push the edges as line segments (2 points per line)
-            for &(a, b) in &CUBE_EDGES {
-                lines.push(corners[a]); // Start
-                lines.push(corners[b]); // End
+            // Current node edges
+            let mut lines = Vec::with_capacity(CUBE_EDGES.len() * 2);
+            let mut colours = Vec::with_capacity(CUBE_EDGES.len() * 2);
 
+            for &(a, b) in &CUBE_EDGES {
+                lines.push(corners[a]);
+                lines.push(corners[b]);
                 colours.push(colour);
                 colours.push(colour);
             }
 
-            // Recurse into children if present
+            // Recurse into children
             if node.has_children() {
                 let half = size * 0.5;
-                for (i, child) in node.children.iter().enumerate() {
-                    if let Some(child) = child {
-                        let offset = origin + Vec3::new(((i >> 2) & 1) as f32, ((i >> 1) & 1) as f32, (i & 1) as f32) * half;
-                        collect_octree_lines(child, offset, depth + 1, max_depth, camera_pos, lines, colours);
-                    }
+                use rayon::prelude::*;
+
+                let children_results: Vec<_> = node
+                    .children
+                    .par_iter()
+                    .enumerate()
+                    .filter_map(|(i, child)| {
+                        child.as_ref().map(|child| {
+                            let offset = origin + Vec3::new(((i >> 2) & 1) as f32, ((i >> 1) & 1) as f32, (i & 1) as f32) * half;
+
+                            collect_octree_lines(child, offset, depth + 1, max_depth, camera_pos)
+                        })
+                    })
+                    .collect();
+
+                // Merge children results
+                for (mut child_lines, mut child_colours) in children_results {
+                    lines.append(&mut child_lines);
+                    colours.append(&mut child_colours);
                 }
             }
+
+            (lines, colours)
         }
 
-        // Centre world around (0,0,0)
-        let root_size = 2f32.powi(self.max_depth as i32);
-        let root_origin = Vec3::splat(-root_size * 0.5);
-
-        let (mut lines, mut colours) = (Vec::new(), Vec::new());
-        collect_octree_lines(
-            &self.root,
-            root_origin,
-            0,
-            self.max_depth,
-            camera_pos,
-            &mut lines,
-            &mut colours,
-        );
+        let (lines, colours) = collect_octree_lines(&self.root, self.get_root_origin().as_vec3(), 0, self.max_depth, camera_pos);
 
         // Create the Mesh
         Mesh::new(PrimitiveTopology::LineList, RenderAssetUsages::RENDER_WORLD)
             // Insert the lines
             .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, VertexAttributeValues::Float32x3(lines))
             .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, VertexAttributeValues::Float32x4(colours))
+    }
+}
+
+#[derive(Resource)]
+pub struct SvoUpdateState {
+    pub last_camera_pos: Vec3,
+    pub last_lod_region: IVec3,
+}
+
+#[allow(clippy::type_complexity)]
+pub fn update_svo(
+    mut state: ResMut<SvoUpdateState>,
+    svo: ResMut<SparseVoxelWorld<i32>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut mesh_queries: ParamSet<(
+        Query<&mut Mesh3d, With<SvoEntity>>,
+        Query<&mut Mesh3d, With<SvoOctantsEntity>>,
+    )>,
+    camera_query: Query<&Transform, With<Camera3d>>,
+) {
+    let camera = camera_query.single();
+
+    if let Ok(camera) = camera {
+        let camera_pos = camera.translation;
+
+        // Convert position to a "LOD region" (like chunking)
+        let root_cell_size = 2u32.pow(svo.max_depth) as f32;
+        let lod_cell_size = root_cell_size.min(LOD_DISTANCE * 0.5);
+        let current_region = IVec3::new(
+            (camera_pos.x / lod_cell_size).floor() as i32,
+            (camera_pos.y / lod_cell_size).floor() as i32,
+            (camera_pos.z / lod_cell_size).floor() as i32,
+        );
+
+        // Only regenerate mesh if camera moved into a new region
+        if current_region != state.last_lod_region {
+            // New SVO Mesh
+            let new_mesh = svo.generate_mesh(camera_pos);
+            if let Ok(mut mesh_handle) = mesh_queries.p0().single_mut() {
+                *mesh_handle = Mesh3d(meshes.add(new_mesh));
+            }
+
+            if SHOW_OCTANTS_MESH {
+                // New Octants SVO Mesh
+                let new_octants_mesh = svo.generate_bounding_octants_mesh(camera_pos);
+                if let Ok(mut mesh_handle) = mesh_queries.p1().single_mut() {
+                    *mesh_handle = Mesh3d(meshes.add(new_octants_mesh));
+                }
+            }
+
+            // Update state
+            state.last_camera_pos = camera_pos;
+            state.last_lod_region = current_region;
+        }
     }
 }

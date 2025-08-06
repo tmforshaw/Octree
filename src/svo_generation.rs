@@ -3,7 +3,7 @@ use noise::{NoiseFn, Perlin};
 
 use crate::octree::{SparseVoxelWorld, VoxelNode};
 
-impl<T: Clone> SparseVoxelWorld<T> {
+impl<T: Clone + Sync> SparseVoxelWorld<T> {
     pub fn new_from_noise(max_depth: u32, threshold: f64, value: T) -> Self {
         let perlin = Perlin::new(0);
         let scale = 0.1;
