@@ -1,23 +1,31 @@
 use bevy::math::IVec3;
 use noise::{NoiseFn, Perlin};
+use rayon::prelude::*;
 
 use crate::octree::{SparseVoxelWorld, VoxelNode};
 
-impl<T: Clone + Sync> SparseVoxelWorld<T> {
+impl<T: Clone + Send + Sync> SparseVoxelWorld<T> {
     pub fn new_from_noise(max_depth: u32, threshold: f64, value: T) -> Self {
         let perlin = Perlin::new(0);
         let scale = 0.1;
 
         let size = 2i32.pow(max_depth);
+        let range = -size / 2..size / 2;
 
-        let positions = ((-size / 2)..size / 2)
-            .flat_map(|x| {
-                ((-size / 2)..size / 2).flat_map(move |y| {
-                    ((-size / 2)..size / 2).filter_map(move |z| {
+        // Flatten x, y, z coordinates in parallel
+        let positions = range
+            .clone()
+            .into_par_iter()
+            .flat_map_iter(|x| {
+                let range_clone = range.clone();
+
+                range.clone().flat_map(move |y| {
+                    range_clone.clone().filter_map(move |z| {
                         let nx = x as f64 * scale;
                         let ny = -y as f64 * scale;
                         let nz = z as f64 * scale;
                         let noise_val = perlin.get([nx, ny, nz]);
+
                         if noise_val > threshold {
                             Some(IVec3::new(x, y, z))
                         } else {
@@ -33,6 +41,7 @@ impl<T: Clone + Sync> SparseVoxelWorld<T> {
             max_depth,
         };
 
+        // Sequential insertion to avoid thread-safety issues
         for pos in positions {
             svo.insert(pos, value.clone());
         }
