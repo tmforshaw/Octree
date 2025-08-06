@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use bevy::{
     asset::RenderAssetUsages,
     prelude::*,
@@ -164,7 +166,6 @@ impl<T: Clone + Send + Sync + AsPrimitive<f32>> SparseVoxelWorld<T> {
         where
             T: Clone + Send + Sync + AsPrimitive<f32>,
         {
-            // Offsets for all 6 cube faces
             const FACE_OFFSETS: [[Vec3; 4]; 6] = [
                 // Bottom (-Y)
                 [
@@ -210,7 +211,6 @@ impl<T: Clone + Send + Sync + AsPrimitive<f32>> SparseVoxelWorld<T> {
                 ],
             ];
 
-            // Normals for all 6 cube faces
             const FACE_NORMALS: [[f32; 3]; 6] = [
                 [0.0, -1.0, 0.0], // Bottom
                 [0.0, 1.0, 0.0],  // Top
@@ -220,64 +220,91 @@ impl<T: Clone + Send + Sync + AsPrimitive<f32>> SparseVoxelWorld<T> {
                 [1.0, 0.0, 0.0],  // Right
             ];
 
-            let num_voxels = voxels.len();
-            let vertices_per_cube = 24;
-            let indices_per_cube = 36;
+            // Neighbor directions for culling
+            const NEIGHBOR_OFFSETS: [IVec3; 6] = [
+                IVec3::new(0, -1, 0), // Bottom
+                IVec3::new(0, 1, 0),  // Top
+                IVec3::new(0, 0, -1), // Front
+                IVec3::new(0, 0, 1),  // Back
+                IVec3::new(-1, 0, 0), // Left
+                IVec3::new(1, 0, 0),  // Right
+            ];
 
-            let total_vertices = num_voxels * vertices_per_cube;
-            let total_indices = num_voxels * indices_per_cube;
+            // Build voxel set for neighbor checks
+            let voxel_set: HashSet<IVec3> = voxels.iter().map(|(pos, _, _)| pos.as_ivec3()).collect();
 
-            let mut vertices = vec![[0.; 3]; total_vertices];
-            let mut normals = vec![[0.; 3]; total_vertices];
-            let mut colours = vec![[0.; 4]; total_vertices];
-            let mut indices = vec![0; total_indices];
+            // Generate mesh data in parallel
+            let results: Vec<(Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 4]>, Vec<u32>)> = voxels
+                .par_iter()
+                .map(|&(pos, scale, ref data)| {
+                    let mut v = Vec::new();
+                    let mut n = Vec::new();
+                    let mut c = Vec::new();
+                    let mut idx = Vec::new();
 
-            // Iterate over chunks of vertices, normals, and indices to generate them in parallel
-            vertices
-                .par_chunks_mut(vertices_per_cube)
-                .zip(normals.par_chunks_mut(vertices_per_cube))
-                .zip(colours.par_chunks_mut(vertices_per_cube))
-                .zip(indices.par_chunks_mut(indices_per_cube))
-                .enumerate()
-                .for_each(|(i, (((v_chunk, n_chunk), c_chunk), i_chunk))| {
-                    let (pos, scale, data) = voxels[i];
-
-                    let base_index = (i * 24) as u32; // 24 vertices per cube
-
-                    let colour = if let Some(data) = data {
-                        Color::hsv(data.as_() * 255., 1.0, 1.)
+                    let base_colour = if let Some(ref d) = *data {
+                        Color::hsv(d.as_() * 255., 1.0, 1.)
                     } else {
                         Color::srgb_u8(124, 144, 255)
                     }
                     .to_linear()
                     .to_f32_array();
 
-                    for (face_id, face) in FACE_OFFSETS.iter().enumerate() {
-                        // Push 4 vertices for this face
-                        for (corner_id, &corner) in face.iter().enumerate() {
-                            let v_idx = face_id * 4 + corner_id;
+                    let mut vertex_index_offset = 0u32;
 
-                            v_chunk[v_idx] = (pos + corner * scale).to_array();
-                            n_chunk[v_idx] = FACE_NORMALS[face_id];
-                            c_chunk[v_idx] = colour;
+                    for (face_id, face) in FACE_OFFSETS.iter().enumerate() {
+                        // Skip face if neighbor voxel exists
+                        let neighbor = pos.as_ivec3() + NEIGHBOR_OFFSETS[face_id];
+                        if voxel_set.contains(&neighbor) {
+                            continue;
                         }
 
-                        let i_idx = face_id * 6;
-                        // Two triangles per face (quad)
-                        i_chunk[i_idx..i_idx + 6].copy_from_slice(&[
-                            base_index + (face_id * 4 + 0) as u32,
-                            base_index + (face_id * 4 + 1) as u32,
-                            base_index + (face_id * 4 + 2) as u32,
-                            base_index + (face_id * 4 + 0) as u32,
-                            base_index + (face_id * 4 + 2) as u32,
-                            base_index + (face_id * 4 + 3) as u32,
+                        // Generate this face (4 vertices, 2 triangles)
+                        for &corner in face {
+                            v.push((pos + corner * scale).to_array());
+                            n.push(FACE_NORMALS[face_id]);
+                            c.push(base_colour);
+                        }
+
+                        // Add indices (two triangles)
+                        idx.extend_from_slice(&[
+                            vertex_index_offset,
+                            vertex_index_offset + 1,
+                            vertex_index_offset + 2,
+                            vertex_index_offset,
+                            vertex_index_offset + 2,
+                            vertex_index_offset + 3,
                         ]);
+
+                        vertex_index_offset += 4;
                     }
-                });
+
+                    (v, n, c, idx)
+                })
+                .collect();
+
+            // Flatten results
+            let mut vertices = Vec::new();
+            let mut normals = Vec::new();
+            let mut colours = Vec::new();
+            let mut indices = Vec::new();
+
+            let mut index_offset = 0u32;
+            for (mut v, mut n, mut c, mut idx) in results {
+                // Adjust indices for global vertex offset
+                for ind in &mut idx {
+                    *ind += index_offset;
+                }
+                index_offset += v.len() as u32;
+
+                vertices.append(&mut v);
+                normals.append(&mut n);
+                colours.append(&mut c);
+                indices.append(&mut idx);
+            }
 
             (vertices, normals, colours, indices)
         }
-
         let (vertices, normals, colours, indices) = vertices_indices_and_normals_from_voxels(&positions_and_scales);
 
         // Create the Mesh
