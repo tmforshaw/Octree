@@ -3,6 +3,7 @@ use bevy::{
     prelude::*,
     render::mesh::{Indices, PrimitiveTopology, VertexAttributeValues},
 };
+use num_traits::AsPrimitive;
 use rayon::prelude::*;
 
 pub const VOXEL_WORLD_DEPTH: u32 = 8;
@@ -77,7 +78,7 @@ pub struct SparseVoxelWorld<T> {
     pub max_depth: u32,
 }
 
-impl<T: Clone + Sync> SparseVoxelWorld<T> {
+impl<T: Clone + Send + Sync + AsPrimitive<f32>> SparseVoxelWorld<T> {
     pub fn get_root_origin(&self) -> IVec3 {
         // Centre the origin at (0, 0, 0)
         let world_size = 1 << self.max_depth;
@@ -93,7 +94,13 @@ impl<T: Clone + Sync> SparseVoxelWorld<T> {
     }
 
     // Returns Vec of node centres and their size
-    pub fn traverse_lod(node: &VoxelNode<T>, origin: IVec3, depth: u32, camera_pos: Vec3, max_depth: u32) -> Vec<(Vec3, f32)> {
+    pub fn traverse_lod(
+        node: &VoxelNode<T>,
+        origin: IVec3,
+        depth: u32,
+        camera_pos: Vec3,
+        max_depth: u32,
+    ) -> Vec<(Vec3, f32, Option<T>)> {
         // Skip empty nodes
         if !node.occupied {
             return Vec::new();
@@ -113,7 +120,7 @@ impl<T: Clone + Sync> SparseVoxelWorld<T> {
 
         // Leaf node or LOD cutoff
         if should_stop || !node.has_children() {
-            return vec![(origin.as_vec3(), size_f)];
+            return vec![(origin.as_vec3(), size_f, node.data)];
         }
 
         // Half size for child nodes
@@ -156,8 +163,13 @@ impl<T: Clone + Sync> SparseVoxelWorld<T> {
             self.max_depth,
         );
 
-        #[allow(clippy::identity_op)]
-        fn vertices_indices_and_normals_from_voxels(voxels: &[(Vec3, f32)]) -> (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<u32>) {
+        #[allow(clippy::identity_op, clippy::type_complexity)]
+        fn vertices_indices_and_normals_from_voxels<T>(
+            voxels: &[(Vec3, f32, Option<T>)],
+        ) -> (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 4]>, Vec<u32>)
+        where
+            T: Clone + Send + Sync + AsPrimitive<f32>,
+        {
             // Offsets for all 6 cube faces
             const FACE_OFFSETS: [[Vec3; 4]; 6] = [
                 // Bottom (-Y)
@@ -223,18 +235,28 @@ impl<T: Clone + Sync> SparseVoxelWorld<T> {
 
             let mut vertices = vec![[0.; 3]; total_vertices];
             let mut normals = vec![[0.; 3]; total_vertices];
+            let mut colours = vec![[0.; 4]; total_vertices];
             let mut indices = vec![0; total_indices];
 
             // Iterate over chunks of vertices, normals, and indices to generate them in parallel
             vertices
                 .par_chunks_mut(vertices_per_cube)
                 .zip(normals.par_chunks_mut(vertices_per_cube))
+                .zip(colours.par_chunks_mut(vertices_per_cube))
                 .zip(indices.par_chunks_mut(indices_per_cube))
                 .enumerate()
-                .for_each(|(i, ((v_chunk, n_chunk), i_chunk))| {
-                    let (pos, scale) = voxels[i];
+                .for_each(|(i, (((v_chunk, n_chunk), c_chunk), i_chunk))| {
+                    let (pos, scale, data) = voxels[i];
 
                     let base_index = (i * 24) as u32; // 24 vertices per cube
+
+                    let colour = if let Some(data) = data {
+                        Color::hsv(data.as_() * 255., 1.0, 1.)
+                    } else {
+                        Color::srgb_u8(124, 144, 255)
+                    }
+                    .to_linear()
+                    .to_f32_array();
 
                     for (face_id, face) in FACE_OFFSETS.iter().enumerate() {
                         // Push 4 vertices for this face
@@ -243,6 +265,7 @@ impl<T: Clone + Sync> SparseVoxelWorld<T> {
 
                             v_chunk[v_idx] = (pos + corner * scale).to_array();
                             n_chunk[v_idx] = FACE_NORMALS[face_id];
+                            c_chunk[v_idx] = colour;
                         }
 
                         let i_idx = face_id * 6;
@@ -258,17 +281,18 @@ impl<T: Clone + Sync> SparseVoxelWorld<T> {
                     }
                 });
 
-            (vertices, normals, indices)
+            (vertices, normals, colours, indices)
         }
 
-        let (vertices, normals, indices) = vertices_indices_and_normals_from_voxels(&positions_and_scales);
+        let (vertices, normals, colours, indices) = vertices_indices_and_normals_from_voxels(&positions_and_scales);
 
         // Create the Mesh
         Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
             // Insert the vertex positions, indices, and normals
             .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, VertexAttributeValues::Float32x3(vertices))
-            .with_inserted_indices(Indices::U32(indices))
+            .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, VertexAttributeValues::Float32x4(colours))
             .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, VertexAttributeValues::Float32x3(normals))
+            .with_inserted_indices(Indices::U32(indices))
     }
 
     pub fn generate_bounding_octants_mesh(&self, camera_pos: Vec3) -> Mesh {

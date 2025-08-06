@@ -66,28 +66,35 @@ pub fn setup(
         Transform::from_xyz(0.0, 1000.0, 1000.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
 
-    let svo = SparseVoxelWorld::new_from_noise(VOXEL_WORLD_DEPTH, 0.5, 0);
+    let svo = SparseVoxelWorld::new_from_noise(VOXEL_WORLD_DEPTH, 0.5);
 
     let camera_pos = camera.single().unwrap().translation;
+
+    let cube_material = materials.add(StandardMaterial {
+        base_color: Color::WHITE,
+        ..default()
+    });
 
     // Generate mesh for SVO
     let svo_mesh = svo.generate_mesh(camera_pos);
     commands.spawn((
         Mesh3d(meshes.add(svo_mesh)),
-        MeshMaterial3d(materials.add(Color::srgb_u8(124, 144, 255))),
+        MeshMaterial3d(cube_material.clone()),
         Transform::from_xyz(0.0, 0.0, 0.0),
         SvoEntity,
     ));
 
     if SHOW_OCTANTS_MESH {
+        let cube_material = materials.add(StandardMaterial {
+            unlit: true,
+            base_color: Color::WHITE,
+            ..default()
+        });
+
         let svo_octants_mesh = svo.generate_bounding_octants_mesh(camera_pos);
         commands.spawn((
             Mesh3d(meshes.add(svo_octants_mesh)),
-            MeshMaterial3d(materials.add(StandardMaterial {
-                unlit: true,
-                base_color: Color::WHITE,
-                ..default()
-            })),
+            MeshMaterial3d(cube_material),
             Transform::from_xyz(0.0, 0.0, 0.0),
             SvoOctantsEntity,
         ));

@@ -4,10 +4,10 @@ use rayon::prelude::*;
 
 use crate::octree::{SparseVoxelWorld, VoxelNode};
 
-impl<T: Clone + Send + Sync> SparseVoxelWorld<T> {
-    pub fn new_from_noise(max_depth: u32, threshold: f64, value: T) -> Self {
+impl SparseVoxelWorld<i32> {
+    pub fn new_from_noise(max_depth: u32, threshold: f64) -> Self {
         let perlin = Perlin::new(0);
-        let scale = 0.1;
+        let scale = 0.05;
 
         let size = 2i32.pow(max_depth);
         let range = -size / 2..size / 2;
@@ -43,7 +43,7 @@ impl<T: Clone + Send + Sync> SparseVoxelWorld<T> {
 
         // Sequential insertion to avoid thread-safety issues
         for pos in positions {
-            svo.insert(pos, value.clone());
+            svo.insert(pos, pos.y / 2i32.pow(svo.max_depth));
         }
 
         svo
