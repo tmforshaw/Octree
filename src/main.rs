@@ -38,7 +38,7 @@ fn main() {
         )
         .insert_resource(MovementSettings {
             sensitivity: 0.00015, // default is 0.00012
-            speed: 24.0,          // default is 12.0
+            speed: 48.0,          // default is 12.0
         })
         .insert_resource(KeyBindings {
             move_descend: KeyCode::ControlLeft,

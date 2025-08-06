@@ -93,7 +93,7 @@ impl<T: Clone + Send + Sync + AsPrimitive<f32>> SparseVoxelWorld<T> {
         self.root.insert(pos, self.max_depth, root_min_corner, value);
     }
 
-    // Returns Vec of node centres and their size
+    // Returns Vec of node centres, their size, and stored data
     pub fn traverse_lod(
         node: &VoxelNode<T>,
         origin: IVec3,
@@ -155,13 +155,7 @@ impl<T: Clone + Send + Sync + AsPrimitive<f32>> SparseVoxelWorld<T> {
     }
 
     pub fn generate_mesh(&self, camera_pos: Vec3) -> Mesh {
-        let positions_and_scales = Self::traverse_lod(
-            &self.root,
-            self.get_root_origin(),
-            0, // start depth
-            camera_pos,
-            self.max_depth,
-        );
+        let positions_and_scales = Self::traverse_lod(&self.root, self.get_root_origin(), 0, camera_pos, self.max_depth);
 
         #[allow(clippy::identity_op, clippy::type_complexity)]
         fn vertices_indices_and_normals_from_voxels<T>(
@@ -354,7 +348,8 @@ impl<T: Clone + Send + Sync + AsPrimitive<f32>> SparseVoxelWorld<T> {
                 .map(|c| {
                     let line_vertex = origin + c * size;
                     let centre_dir = (line_vertex - centre).normalize();
-                    (line_vertex + centre_dir * 0.001 * size).to_array()
+
+                    (line_vertex - centre_dir * 0.0005 * size).to_array()
                 })
                 .collect();
 
