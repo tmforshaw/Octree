@@ -66,7 +66,7 @@ pub fn setup(
         Transform::from_xyz(0.0, 1000.0, 1000.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
 
-    let svo = SparseVoxelWorld::new_from_noise(VOXEL_WORLD_DEPTH, 0.5);
+    let svo = SparseVoxelWorld::new_from_noise(VOXEL_WORLD_DEPTH, 0.5, 0.05, 16.0);
 
     let camera_pos = camera.single().unwrap().translation;
 

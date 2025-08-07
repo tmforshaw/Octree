@@ -9,7 +9,7 @@ use num_traits::AsPrimitive;
 use rayon::prelude::*;
 
 pub const VOXEL_WORLD_DEPTH: u32 = 8;
-pub const LOD_DISTANCE: f32 = 20.;
+pub const LOD_DISTANCE: f32 = 50.;
 pub const SHOW_OCTANTS_MESH: bool = false;
 
 #[derive(Component)]
